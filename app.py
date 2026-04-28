@@ -17,6 +17,7 @@ from lib.scenarios import SCENARIOS, calc_scenario_delta, calc_leg_pnl
 from lib.charts import (
     chart_curva_antes_depois, chart_pnl_barras,
     chart_pnl_consolidado, chart_pnl_por_perna, chart_krd,
+    chart_cupom_cambial, chart_dol_forward, chart_taxa_real,
 )
 
 st.set_page_config(page_title="Simulador TPF + Derivativos", layout="wide")
@@ -210,8 +211,12 @@ PRESETS = {
         {"instrument": "DAP", "ticker": "N29", "direction": "C", "quantity": 20, "taxa": 7.40, "corr_type": "R$/contrato", "corr_value": 1.30},
     ],
     "DOL+DI1 (cupom sint.)": [
-        {"instrument": "DOL", "ticker": "K26", "direction": "C", "quantity": 10, "taxa": 4976.5, "corr_type": "Nenhuma", "corr_value": 0},
+        {"instrument": "DOL", "ticker": "K26", "direction": "C", "quantity": 10, "taxa": 4976.5, "corr_type": "Nenhuma", "corr_value": 0.0},
         {"instrument": "DI1", "ticker": "K26", "direction": "C", "quantity": 10, "taxa": 14.60, "corr_type": "R$/contrato", "corr_value": 1.30},
+    ],
+    "DI1+FRC (dol sint.)": [
+        {"instrument": "DI1", "ticker": "F28", "direction": "C", "quantity": 20, "taxa": 14.60, "corr_type": "R$/contrato", "corr_value": 1.30},
+        {"instrument": "FRC", "ticker": "F28", "direction": "V", "quantity": 20, "taxa": 5.06, "corr_type": "R$/contrato", "corr_value": 1.30},
     ],
     "FRC direcional": [
         {"instrument": "FRC", "ticker": "F28", "direction": "C", "quantity": 20, "taxa": 5.06, "corr_type": "R$/contrato", "corr_value": 1.30},
@@ -343,7 +348,7 @@ def render_av_table_html(valid, strat, total_corr_bps):
     result_text = ""
     if strat["type"] == "casada":
         allin = strat["spread"] - total_corr_bps
-        result_text = f"{strat['bmk']} + {allin:+.2f} bps"
+        result_text = f"{strat['bmk']} {allin:+.2f} bps"
     elif strat["type"] == "cupom_sint":
         result_text = f"Cupom cambial {strat['cupom']:.2f}% a.a."
     else:
@@ -656,7 +661,7 @@ with tab_sim:
 
     for i, leg in enumerate(st.session_state.legs):
         info = INSTRUMENTS.get(leg["instrument"], INSTRUMENTS["LTN"])
-        cols = st.columns([1.2, 0.7, 0.6, 0.8, 1.0, 1.0, 0.7, 0.6, 0.3])
+        cols = st.columns([1.2, 0.7, 0.6, 0.8, 1.0, 1.0, 0.7, 0.6])
         vis = "visible" if i == 0 else "collapsed"
 
         with cols[0]:
@@ -726,14 +731,19 @@ with tab_sim:
                 index=CORR_TYPES.index(leg.get("corr_type", "Nenhuma")),
                 key=f"ct_{i}", label_visibility=vis)
         with cols[7]:
-            leg["corr_value"] = st.number_input(
-                "Valor", value=leg.get("corr_value", 0.0),
-                format="%.3f", step=0.001,
-                key=f"cv_{i}", label_visibility=vis)
-        with cols[8]:
-            if len(st.session_state.legs) > 1:
-                if st.button("X", key=f"rm_{i}"):
-                    legs_to_remove.append(i)
+            _sub = st.columns([3, 1])
+            with _sub[0]:
+                leg["corr_value"] = st.number_input(
+                    "Valor", value=leg.get("corr_value", 0.0),
+                    format="%.3f", step=0.001,
+                    key=f"cv_{i}", label_visibility=vis)
+            with _sub[1]:
+                if len(st.session_state.legs) > 1:
+                    st.markdown(
+                        f'<div style="padding-top:{"27" if i == 0 else "0"}px">'
+                        f'</div>', unsafe_allow_html=True)
+                    if st.button("✕", key=f"rm_{i}"):
+                        legs_to_remove.append(i)
 
     for idx in sorted(legs_to_remove, reverse=True):
         st.session_state.legs.pop(idx)
@@ -744,7 +754,7 @@ with tab_sim:
         st.session_state.legs.append({
             "instrument": "LTN", "ticker": "F32", "direction": "C",
             "quantity": 2000, "taxa": 13.76,
-            "corr_type": "Nenhuma", "corr_value": 0,
+            "corr_type": "Nenhuma", "corr_value": 0.0,
         })
         st.rerun()
 
@@ -766,7 +776,7 @@ with tab_sim:
         allin = strat["spread"] - total_corr_bps
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Spread All-in", f"{allin:.2f} bps")
-        c2.metric("Retorno Equivalente", f"{strat['bmk']} + {allin:+.2f} bps")
+        c2.metric("Retorno Equivalente", f"{strat['bmk']} {allin:+.2f} bps")
         tpf_noc = next((l["noc"] for l in valid if l["info"].type == "tpf"), 0)
         c3.metric("Nocional", f"R$ {tpf_noc/1e6:.1f}M")
         c4.metric("Corretagem Total", f"R$ {total_corr:.0f}")
@@ -776,6 +786,14 @@ with tab_sim:
         c2.metric("DOL Futuro", f"{strat['dol']['taxa']:.1f}")
         c3.metric("Spot", f"{st.session_state.spot:.4f}")
         c4.metric("DI1", f"{strat['di']['taxa']:.3f}%")
+    elif strat["type"] in ("dol_sint", "dol_sint_ddi"):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Dolar Forward Sintetico", f"~{strat.get('fwd', 0):.2f}" if strat.get("fwd") else strat["result"][:30])
+        c2.metric("DI1", f"{strat['di']['taxa']:.3f}%")
+        frc_or_ddi = strat.get("frc") or strat.get("ddi")
+        if frc_or_ddi:
+            c3.metric(frc_or_ddi["instrument"], f"{frc_or_ddi['taxa']:.3f}%")
+        c4.metric("Spot", f"{st.session_state.spot:.4f}")
     elif strat["type"] == "single":
         r = valid[0]
         c1, c2, c3, c4 = st.columns(4)
@@ -788,6 +806,14 @@ with tab_sim:
             "Financeiro",
             f"R$ {r['fin']:,.0f}" if r["info"].conv != "price" else "--")
         c4.metric("DV01 Total", f"R$ {r['dv01_total']:.0f}")
+    else:
+        total_dv01 = sum(l["dv01_total"] for l in valid)
+        total_fin = sum(l["fin"] for l in valid if l["info"].conv != "price")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Estrategia", strat["result"][:40])
+        c2.metric("Financeiro Total", f"R$ {total_fin:,.0f}")
+        c3.metric("DV01 Total", f"R$ {total_dv01:.0f}")
+        c4.metric("Corretagem Total", f"R$ {total_corr:.0f}")
 
     # ========== ATIVO VS PASSIVO ==========
     st.markdown('<div class="sec-h">Ativo vs Passivo</div>', unsafe_allow_html=True)
@@ -940,61 +966,100 @@ with tab_sim:
         sc = SCENARIOS[scenario_key]
         st.caption(sc.desc)
 
-        if scenario_key == "custom":
-            ccc1, ccc2, ccc3 = st.columns(3)
-            with ccc1:
-                custom_p = st.slider("Paralelo", -30, 30, 0, key="cp")
-            with ccc2:
-                custom_i = st.slider("Inclinacao", -30, 30, 0, key="ci")
-            with ccc3:
-                custom_c = st.slider("Curvatura", -30, 30, 0, key="cc")
-            sc.parallel = custom_p
-            sc.slope = custom_i
-            sc.curvature = custom_c
-            magnitude = 0
-        else:
-            magnitude = st.slider("Magnitude taxa pre (bps)", -50, 50, 10, key="sc_mag")
+        is_dol_sint = strat["type"] in ("dol_sint", "dol_sint_ddi")
+        show_fx = has_dol_leg
+        show_ipca = has_ntnb_or_dap
+        show_cupom = has_cupom_leg or has_dol_di_combo
+        show_multi = show_fx or show_ipca or show_cupom
 
-        # --- Multi-factor sliders ---
-        show_multi = has_dol_leg or has_ntnb_or_dap or has_cupom_leg or has_dol_di_combo
         delta_fx_pct = 0.0
         delta_ipca_bps = 0.0
         delta_cupom_bps = 0.0
 
-        if show_multi:
-            st.markdown('<div class="sec-h">Fatores Adicionais</div>', unsafe_allow_html=True)
-            mf_cols = []
-            mf_count = sum([has_dol_leg, has_ntnb_or_dap, has_cupom_leg or has_dol_di_combo])
-            if mf_count > 0:
-                mf_cols = st.columns(mf_count)
-            ci = 0
-            if has_dol_leg:
-                with mf_cols[ci]:
-                    delta_fx_pct = st.slider(
-                        "Cambio USD/BRL (%)", -10.0, 10.0, 0.0, 0.5,
-                        key="mf_fx",
-                        help="Variacao % no spot. Ex: +5 = dolar sobe 5%")
-                ci += 1
-            if has_ntnb_or_dap:
-                with mf_cols[ci]:
-                    delta_ipca_bps = st.slider(
-                        "Taxa real IPCA (bps)", -50, 50, 0,
-                        key="mf_ipca",
-                        help="Choque na taxa real (NTN-B/DAP). Independente do pre.")
-                ci += 1
-            if has_cupom_leg or has_dol_di_combo:
-                with mf_cols[ci]:
-                    delta_cupom_bps = st.slider(
-                        "Cupom cambial (bps)", -50, 50, 0,
-                        key="mf_cupom",
-                        help="Choque no cupom cambial (DDI/FRC).")
-                ci += 1
+        _chart_col, _slider_col = st.columns([3, 1])
 
-        st.plotly_chart(
-            chart_curva_antes_depois(valid, scenario_key, magnitude,
-                                     di1_curve=snap.di1 if snap else None,
-                                     dap_curve=snap.dap if snap else None),
-            use_container_width=True)
+        with _slider_col:
+            st.markdown('<p style="font-size:12px;color:#8b949e;margin-bottom:4px">Choques</p>',
+                        unsafe_allow_html=True)
+            if scenario_key == "custom":
+                custom_p = st.slider("Paralelo", -30, 30, 0, key="cp")
+                custom_i = st.slider("Inclinacao", -30, 30, 0, key="ci")
+                custom_c = st.slider("Curvatura", -30, 30, 0, key="cc")
+                sc.parallel = custom_p
+                sc.slope = custom_i
+                sc.curvature = custom_c
+                magnitude = 0
+            else:
+                magnitude = st.slider("Pre (bps)", -50, 50, 10, key="sc_mag")
+
+            if show_fx:
+                delta_fx_pct = st.slider(
+                    "Cambio (%)", -10.0, 10.0, 0.0, 0.5, key="mf_fx")
+            if show_ipca:
+                delta_ipca_bps = st.slider(
+                    "IPCA (bps)", -50, 50, 0, key="mf_ipca")
+            if show_cupom:
+                delta_cupom_bps = st.slider(
+                    "Cup.Cambial (bps)", -50, 50, 0, key="mf_cupom")
+
+            if is_dol_sint:
+                st.caption("Dol sintetico: mova Pre e Cup.Cambial para simular cenarios FX.")
+
+        with _chart_col:
+            _tab_names = ["Curva Pre"]
+            if show_cupom:
+                _tab_names.append("Cupom Cambial")
+            if show_fx or is_dol_sint or strat["type"] == "cupom_sint":
+                _tab_names.append("Dolar Forward")
+            if show_ipca:
+                _tab_names.append("Taxa Real")
+
+            if len(_tab_names) == 1:
+                st.plotly_chart(
+                    chart_curva_antes_depois(valid, scenario_key, magnitude,
+                                             di1_curve=snap.di1 if snap else None,
+                                             dap_curve=snap.dap if snap else None),
+                    use_container_width=True)
+            else:
+                _chart_tabs = st.tabs(_tab_names)
+                _cti = 0
+                with _chart_tabs[_cti]:
+                    st.plotly_chart(
+                        chart_curva_antes_depois(valid, scenario_key, magnitude,
+                                                 di1_curve=snap.di1 if snap else None,
+                                                 dap_curve=snap.dap if snap else None),
+                        use_container_width=True)
+                _cti += 1
+                if show_cupom:
+                    with _chart_tabs[_cti]:
+                        st.plotly_chart(
+                            chart_cupom_cambial(
+                                snap.frc if snap else [],
+                                delta_cupom_bps=delta_cupom_bps,
+                                legs=valid),
+                            use_container_width=True)
+                    _cti += 1
+                if show_fx or is_dol_sint or strat["type"] == "cupom_sint":
+                    with _chart_tabs[_cti]:
+                        st.plotly_chart(
+                            chart_dol_forward(
+                                snap.di1 if snap else [],
+                                snap.frc if snap else [],
+                                spot=st.session_state.spot,
+                                delta_pre_bps=magnitude,
+                                delta_cupom_bps=delta_cupom_bps,
+                                delta_fx_pct=delta_fx_pct,
+                                legs=valid),
+                            use_container_width=True)
+                    _cti += 1
+                if show_ipca:
+                    with _chart_tabs[_cti]:
+                        st.plotly_chart(
+                            chart_taxa_real(
+                                snap.dap if snap else [],
+                                delta_ipca_bps=delta_ipca_bps,
+                                legs=valid),
+                            use_container_width=True)
         st.plotly_chart(
             chart_pnl_barras(valid, scenario_key, magnitude,
                              delta_fx_pct=delta_fx_pct,

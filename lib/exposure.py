@@ -35,6 +35,17 @@ def get_exposure(instrumento: str, direcao: str, taxa: float) -> dict:
     return {"ativo": rec_bm, "passivo": val} if direcao == "C" else {"ativo": val, "passivo": rec_bm}
 
 
+def _dol_sintetico_fwd(spot: float, taxa_di: float, taxa_frc: float,
+                       du: int, dc: int) -> float:
+    """Calcula o dolar forward implicito de DI1+FRC pela paridade coberta.
+
+    Futuro/Spot = (1+pre)^(DU/252) / (1+cupom*DC/360)
+    """
+    fator_pre = (1 + taxa_di / 100) ** (du / 252)
+    fator_cupom = 1 + (taxa_frc / 100) * dc / 360
+    return spot * fator_pre / fator_cupom if fator_cupom else 0
+
+
 def detect_strategy(legs: list[dict], spot: float = 4.9724) -> dict:
     """Detecta estrategia conhecida a partir das pernas.
 
@@ -57,34 +68,79 @@ def detect_strategy(legs: list[dict], spot: float = 4.9724) -> dict:
             return {"result": f"{d} {info.benchmark} {r['taxa']:.2f}% a.a. lin360 ({r['parsed']['label']}), PU {r['pu']:.2f}", "type": "single"}
         return {"result": f"{d} {r['instrument']} {r['parsed']['label']} a {r['taxa']:.3f}%, PU {r['pu']:.2f}, Fin R$ {r['fin']:,.0f}", "type": "single"}
 
-    same_vcto = len(legs) > 1 and all(l["parsed"]["label"] == legs[0]["parsed"]["label"] for l in legs)
-    tpf = next((l for l in legs if INSTRUMENTS[l["instrument"]].type == "tpf"), None)
-    di = next((l for l in legs if l["instrument"] == "DI1"), None)
-    dap = next((l for l in legs if l["instrument"] == "DAP"), None)
-    dol = next((l for l in legs if l["instrument"] == "DOL"), None)
+    def _find_pair(legs_pool):
+        """Tenta encontrar um par reconhecido dentro das pernas."""
+        tpfs = [l for l in legs_pool if INSTRUMENTS[l["instrument"]].type == "tpf"]
+        dis = [l for l in legs_pool if l["instrument"] == "DI1"]
+        daps = [l for l in legs_pool if l["instrument"] == "DAP"]
+        dols = [l for l in legs_pool if l["instrument"] == "DOL"]
 
-    if tpf and di and same_vcto and tpf["direction"] == di["direction"]:
-        spread = (tpf["tax_fin"] - di["taxa"]) * 100
-        bmk = "IPCA" if tpf["instrument"] == "NTN-B" else "CDI"
-        return {"result": f"{bmk} + {spread:+.2f} bps ({tpf['instrument']} {tpf['tax_fin']:.3f}% vs DI1 {di['taxa']:.3f}%)",
-                "type": "casada", "spread": spread, "bmk": bmk, "tpf": tpf, "di": di}
+        for t in tpfs:
+            for d in dis:
+                if t["parsed"]["label"] == d["parsed"]["label"] and t["direction"] == d["direction"]:
+                    spread = (t["tax_fin"] - d["taxa"]) * 100
+                    bmk = "IPCA" if t["instrument"] == "NTN-B" else "CDI"
+                    return {"type": "casada", "spread": spread, "bmk": bmk, "tpf": t, "di": d,
+                            "result": f"{bmk} {spread:+.2f} bps ({t['instrument']} {t['tax_fin']:.3f}% vs DI1 {d['taxa']:.3f}%)"}
 
-    if tpf and dap and same_vcto and tpf["direction"] == dap["direction"] and tpf["instrument"] == "NTN-B":
-        spread = (tpf["tax_fin"] - dap["taxa"]) * 100
-        return {"result": f"IPCA + {spread:+.2f} bps (NTN-B {tpf['tax_fin']:.3f}% vs DAP {dap['taxa']:.3f}%)",
-                "type": "casada", "spread": spread, "bmk": "IPCA", "tpf": tpf, "di": dap}
+        for t in [l for l in tpfs if l["instrument"] == "NTN-B"]:
+            for d in daps:
+                if t["parsed"]["label"] == d["parsed"]["label"] and t["direction"] == d["direction"]:
+                    spread = (t["tax_fin"] - d["taxa"]) * 100
+                    return {"type": "casada", "spread": spread, "bmk": "IPCA", "tpf": t, "di": d,
+                            "result": f"IPCA {spread:+.2f} bps (NTN-B {t['tax_fin']:.3f}% vs DAP {d['taxa']:.3f}%)"}
 
-    if dol and di and same_vcto and dol["direction"] == di["direction"]:
-        cupom = cupom_cambial_implicito(spot, dol["taxa"], di["taxa"], di["du"], dol["dc"])
-        direc = "Comprado" if dol["direction"] == "C" else "Vendido"
-        return {"result": f"{direc} Cupom Cambial Sintetico: {cupom:.2f}% a.a. lin360",
-                "type": "cupom_sint", "cupom": cupom, "dol": dol, "di": di}
+        for dol in dols:
+            for d in dis:
+                if dol["parsed"]["label"] == d["parsed"]["label"] and dol["direction"] == d["direction"]:
+                    cupom = cupom_cambial_implicito(spot, dol["taxa"], d["taxa"], d["du"], dol["dc"])
+                    direc = "Comprado" if dol["direction"] == "C" else "Vendido"
+                    return {"type": "cupom_sint", "cupom": cupom, "dol": dol, "di": d,
+                            "result": f"{direc} Cupom Cambial Sintetico: {cupom:.2f}% a.a."}
 
-    if dol and di and same_vcto and dol["direction"] != di["direction"]:
-        direc = "Long" if dol["direction"] == "C" else "Short"
-        return {"result": f"{direc} USD/BRL puro (DOL {dol['taxa']:.1f}, DI1 {di['taxa']:.3f}%)", "type": "fx_direcional"}
+        frcs = [l for l in legs_pool if l["instrument"] == "FRC"]
+        ddis = [l for l in legs_pool if l["instrument"] == "DDI"]
 
-    return {"result": "Combinacao customizada", "type": "custom"}
+        for d in dis:
+            for f in frcs:
+                if d["parsed"]["label"] == f["parsed"]["label"] and d["direction"] != f["direction"]:
+                    direc = "Comprado" if d["direction"] == "C" else "Vendido"
+                    fwd = _dol_sintetico_fwd(spot, d["taxa"], f["taxa"], d["du"], f["dc"])
+                    return {"type": "dol_sint", "di": d, "frc": f, "fwd": fwd,
+                            "result": f"{direc} Dolar Sintetico (DI1+FRC): fwd ~{fwd:.2f}"}
+
+        for d in dis:
+            for dd in ddis:
+                if d["parsed"]["label"] == dd["parsed"]["label"] and d["direction"] != dd["direction"]:
+                    direc = "Comprado" if d["direction"] == "C" else "Vendido"
+                    return {"type": "dol_sint_ddi", "di": d, "ddi": dd,
+                            "result": f"{direc} Dolar Sintetico (DI1+DDI)"}
+
+        return None
+
+    pair = _find_pair(legs)
+    if pair:
+        _used = {id(v) for v in [pair.get("tpf"), pair.get("di"), pair.get("dol"),
+                                  pair.get("frc"), pair.get("ddi")] if v is not None}
+        remaining = [l for l in legs if id(l) not in _used]
+        if remaining:
+            extras = []
+            for r in remaining:
+                info = INSTRUMENTS[r["instrument"]]
+                d = "C" if r["direction"] == "C" else "V"
+                extras.append(f"{d} {r['instrument']} {r['parsed']['label']}")
+            pair["result"] += " + " + ", ".join(extras)
+        return pair
+
+    descs = []
+    for l in legs:
+        info = INSTRUMENTS[l["instrument"]]
+        d = "C" if l["direction"] == "C" else "V"
+        if info.conv == "price":
+            descs.append(f"{d} {l['instrument']} {l['parsed']['label']} {l['taxa']:.1f}")
+        else:
+            descs.append(f"{d} {l['instrument']} {l['parsed']['label']} {l['taxa']:.3f}%")
+    return {"result": " | ".join(descs), "type": "multi"}
 
 
 def analyze_risk_factors(legs: list[dict], strategy: dict) -> list[dict]:
@@ -107,9 +163,12 @@ def analyze_risk_factors(legs: list[dict], strategy: dict) -> list[dict]:
     has_di = "DI1" in insts
     has_dap = "DAP" in insts
     has_dol = "DOL" in insts
+    has_frc = "FRC" in insts
+    has_ddi = "DDI" in insts
     has_ntnb = "NTN-B" in insts
     same_vcto = len(legs) > 1 and all(l["parsed"]["label"] == legs[0]["parsed"]["label"] for l in legs)
     is_casada = strategy["type"] == "casada"
+    is_dol_sint = strategy["type"] in ("dol_sint", "dol_sint_ddi")
 
     if len(legs) == 1:
         info = INSTRUMENTS[legs[0]["instrument"]]
@@ -121,6 +180,15 @@ def analyze_risk_factors(legs: list[dict], strategy: dict) -> list[dict]:
                 factors.append({"fator": "Inclinacao", "exposto": True, "desc": "Titulo com cupom tem fluxos em multiplos vertices"})
             if has_ntnb:
                 factors.append({"fator": "Inflacao (IPCA)", "exposto": True, "desc": "NTN-B indexada ao IPCA"})
+        return factors
+
+    if is_dol_sint:
+        factors.append({"fator": "Cambio (USD/BRL)", "exposto": True,
+                        "desc": "DI1+FRC/DDI = dolar forward sintetico. Exposto a variacao cambial."})
+        factors.append({"fator": "Nivel (taxa pre BRL)", "exposto": False,
+                        "desc": "DI1 e FRC/DDI se cancelam no fator pre — exposicao residual eh cambio."})
+        factors.append({"fator": "Cupom Cambial", "exposto": False,
+                        "desc": "FRC/DDI hedgeia cupom cambial embutido na posicao."})
         return factors
 
     if is_casada and same_vcto and not has_cupom_tpf:

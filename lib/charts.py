@@ -4,7 +4,11 @@ from __future__ import annotations
 import plotly.graph_objects as go
 from .instruments import INSTRUMENTS
 from .scenarios import calc_scenario_delta, calc_leg_pnl
-from .curves import flat_forward_curve, build_di_vertices, build_dap_vertices
+from .curves import (
+    flat_forward_curve, flat_forward_curve_lin360,
+    build_di_vertices, build_dap_vertices, build_frc_vertices,
+    build_forward_curve, flat_forward_lin360,
+)
 
 COLORS = ["#58a6ff", "#f85149", "#3fb950", "#d29922", "#bc8cff", "#f778ba"]
 
@@ -24,12 +28,14 @@ def _base_layout(title: str = "", height: int = 350) -> dict:
         font=dict(
             family="Inter, -apple-system, BlinkMacSystemFont, sans-serif",
             size=12, color="#c9d1d9"),
-        title=dict(text=title, font=dict(size=14, color="#e6edf3")),
-        margin=dict(l=60, r=20, t=40, b=50),
+        title=dict(text=title, font=dict(size=13, color="#e6edf3"),
+                   x=0, xanchor="left", y=0.98, yanchor="top"),
+        margin=dict(l=60, r=20, t=60, b=50),
         height=height,
         legend=dict(
-            orientation="h", yanchor="bottom", y=1.02,
-            font=dict(color="#c9d1d9")),
+            orientation="h", yanchor="top", y=1.12, xanchor="left", x=0,
+            font=dict(color="#c9d1d9", size=11),
+            itemwidth=30, tracegroupgap=4),
     )
 
 
@@ -129,14 +135,13 @@ def chart_curva_antes_depois(legs: list[dict], scenario_key: str,
     if di1_curve:
         try:
             smooth_dus, smooth_rates = _build_smooth_curve(di1_curve, du_step=5)
-            vert_dus, vert_rates = _build_di_curve(di1_curve)
 
             if smooth_dus:
                 fig.add_trace(go.Scatter(
                     x=smooth_dus, y=smooth_rates, mode="lines",
-                    name="Curva DI (flat fwd)",
-                    line=dict(color=_MUTED, width=2, dash="dash"),
-                    hovertemplate="DU: %{x}<br>Taxa: %{y:.3f}%<extra>DI Antes</extra>",
+                    name="DI Antes",
+                    line=dict(color=_MUTED, width=1.5, dash="dash"),
+                    hovertemplate="DU: %{x}<br>Taxa: %{y:.3f}%<extra>Antes</extra>",
                 ))
 
                 curve_deltas = [calc_scenario_delta(du, du_min_legs, du_max_legs, scenario_key, magnitude)
@@ -145,40 +150,32 @@ def chart_curva_antes_depois(legs: list[dict], scenario_key: str,
 
                 fig.add_trace(go.Scatter(
                     x=smooth_dus, y=curve_after, mode="lines",
-                    name="Curva DI Depois",
-                    line=dict(color=_BLUE, width=2.5),
+                    name="DI Depois",
+                    line=dict(color=_BLUE, width=2),
                     customdata=curve_deltas,
-                    hovertemplate="DU: %{x}<br>Taxa: %{y:.3f}%<br>Delta: %{customdata:+.1f}bp<extra>DI Depois</extra>",
+                    hovertemplate="DU: %{x}<br>Taxa: %{y:.3f}%<br>Delta: %{customdata:+.1f}bp<extra>Depois</extra>",
                 ))
 
                 fig.add_trace(go.Scatter(
                     x=smooth_dus + smooth_dus[::-1],
                     y=curve_after + smooth_rates[::-1],
-                    fill="toself", fillcolor="rgba(88,166,255,0.08)",
+                    fill="toself", fillcolor="rgba(88,166,255,0.06)",
                     line=dict(width=0), showlegend=False, hoverinfo="skip",
-                ))
-
-            if vert_dus:
-                fig.add_trace(go.Scatter(
-                    x=vert_dus, y=vert_rates, mode="markers",
-                    name="Vertices DI",
-                    marker=dict(size=4, color=_MUTED, symbol="circle"),
-                    hovertemplate="DU: %{x}<br>Taxa: %{y:.3f}%<extra>Vertice DI</extra>",
                 ))
         except Exception:
             pass
 
     has_ntnb = any(l["instrument"] == "NTN-B" for l in legs)
-    has_dap = any(l["instrument"] == "DAP" for l in legs)
-    if dap_curve and (has_ntnb or has_dap):
+    has_dap_leg = any(l["instrument"] == "DAP" for l in legs)
+    if dap_curve and (has_ntnb or has_dap_leg):
         try:
             dap_dus, dap_rates = _build_smooth_dap_curve(dap_curve, du_step=5)
             if dap_dus:
                 fig.add_trace(go.Scatter(
                     x=dap_dus, y=dap_rates, mode="lines",
-                    name="Curva DAP (taxa real)",
-                    line=dict(color=_DAP_COLOR, width=2, dash="dot"),
-                    hovertemplate="DU: %{x}<br>Taxa real: %{y:.3f}%<extra>DAP</extra>",
+                    name="DAP Antes",
+                    line=dict(color=_DAP_COLOR, width=1.5, dash="dot"),
+                    hovertemplate="DU: %{x}<br>Taxa real: %{y:.3f}%<extra>DAP Antes</extra>",
                 ))
 
                 dap_deltas = [calc_scenario_delta(du, du_min_legs, du_max_legs, scenario_key, magnitude)
@@ -187,8 +184,8 @@ def chart_curva_antes_depois(legs: list[dict], scenario_key: str,
 
                 fig.add_trace(go.Scatter(
                     x=dap_dus, y=dap_after, mode="lines",
-                    name="Curva DAP Depois",
-                    line=dict(color=_DAP_COLOR, width=2.5),
+                    name="DAP Depois",
+                    line=dict(color=_DAP_COLOR, width=2),
                     customdata=dap_deltas,
                     hovertemplate="DU: %{x}<br>Taxa real: %{y:.3f}%<br>Delta: %{customdata:+.1f}bp<extra>DAP Depois</extra>",
                 ))
@@ -196,30 +193,33 @@ def chart_curva_antes_depois(legs: list[dict], scenario_key: str,
             pass
 
     if rate_legs:
-        leg_dus = [l["du"] for l in rate_legs]
-        leg_rates = [l["tax_fin"] for l in rate_legs]
-        leg_deltas = [calc_scenario_delta(l["du"], du_min_legs, du_max_legs, scenario_key, magnitude)
-                      for l in rate_legs]
-        leg_after = [r + d / 100 for r, d in zip(leg_rates, leg_deltas)]
-        leg_labels = [f"{_dir_label(l)} {l['instrument']} {l['parsed']['label']}" for l in rate_legs]
+        _positions = ["top center", "bottom center", "top right", "bottom right",
+                      "top left", "bottom left"]
+        for i, l in enumerate(rate_legs):
+            delta = calc_scenario_delta(l["du"], du_min_legs, du_max_legs, scenario_key, magnitude)
+            after = l["tax_fin"] + delta / 100
+            lbl = f"{_dir_label(l)} {l['instrument']} {l['parsed']['label']}"
+            pos = _positions[i % len(_positions)]
+            color = COLORS[i % len(COLORS)]
 
-        fig.add_trace(go.Scatter(
-            x=leg_dus, y=leg_rates, mode="markers", name="Pernas (antes)",
-            marker=dict(size=10, color=_MUTED, symbol="circle-open", line=dict(width=2)),
-            text=leg_labels,
-            hovertemplate="%{text}<br>DU: %{x}<br>Taxa: %{y:.3f}%<extra>Antes</extra>",
-        ))
-        fig.add_trace(go.Scatter(
-            x=leg_dus, y=leg_after, mode="markers+text", name="Pernas (depois)",
-            marker=dict(size=12, color=_BLUE, symbol="circle"),
-            text=[f"{d:+.1f}bp" for d in leg_deltas],
-            textposition="top center", textfont=dict(size=10, color=_BLUE),
-            customdata=list(zip(leg_labels, leg_deltas)),
-            hovertemplate="%{customdata[0]}<br>DU: %{x}<br>Taxa: %{y:.3f}%<br>Delta: %{customdata[1]:+.1f}bp<extra>Depois</extra>",
-        ))
+            fig.add_trace(go.Scatter(
+                x=[l["du"]], y=[l["tax_fin"]], mode="markers",
+                name=lbl,
+                marker=dict(size=8, color=color, symbol="circle-open", line=dict(width=2, color=color)),
+                hovertemplate=f"{lbl}<br>DU: %{{x}}<br>Taxa: %{{y:.3f}}%<extra>Antes</extra>",
+                legendgroup=lbl, showlegend=True,
+            ))
+            fig.add_trace(go.Scatter(
+                x=[l["du"]], y=[after], mode="markers+text",
+                marker=dict(size=10, color=color, symbol="circle"),
+                text=[f"{lbl} {delta:+.0f}bp"],
+                textposition=pos, textfont=dict(size=10, color=color),
+                hovertemplate=f"{lbl}<br>DU: %{{x}}<br>Taxa: %{{y:.3f}}%<br>Delta: {delta:+.1f}bp<extra>Depois</extra>",
+                legendgroup=lbl, showlegend=False,
+            ))
 
     fig.update_layout(
-        **_base_layout("Cenario na Curva de Juros (interpolacao flat forward)", 450),
+        **_base_layout("Curva de Juros — Flat Forward", 450),
         xaxis=dict(title="Prazo (DU)", gridcolor=_GRID, rangemode="tozero"),
         yaxis=dict(title="Taxa (% a.a.)", tickformat=".2f", gridcolor=_GRID),
     )
@@ -326,6 +326,233 @@ def chart_pnl_por_perna(legs: list[dict],
         yaxis=dict(
             title="P&L (R$)", zeroline=True,
             zerolinecolor=_ZERO, gridcolor=_GRID),
+    )
+    return fig
+
+
+_FRC_COLOR = "#bc8cff"
+_FWD_COLOR = "#3fb950"
+
+
+def chart_cupom_cambial(frc_contracts: list, delta_cupom_bps: float = 0.0,
+                         legs: list[dict] = None) -> go.Figure:
+    """Curva de cupom cambial (FRC) antes/depois do choque."""
+    from lib.calendar import default_liq_date
+    from datetime import date
+
+    fig = go.Figure()
+    liq = default_liq_date(date.today())
+    vertices = build_frc_vertices(frc_contracts, liq)
+    if not vertices:
+        fig.update_layout(**_base_layout("Cupom Cambial — sem dados", 400))
+        return fig
+
+    smooth = flat_forward_curve_lin360(vertices, dc_step=5)
+    if not smooth:
+        fig.update_layout(**_base_layout("Cupom Cambial — sem dados", 400))
+        return fig
+
+    dcs_before = [p[0] for p in smooth]
+    rates_before = [p[1] for p in smooth]
+
+    fig.add_trace(go.Scatter(
+        x=dcs_before, y=rates_before, mode="lines",
+        name="Cupom Antes",
+        line=dict(color=_MUTED, width=1.5, dash="dash"),
+        hovertemplate="DC: %{x}<br>Cupom: %{y:.3f}%<extra>Antes</extra>",
+    ))
+
+    rates_after = [r + delta_cupom_bps / 100 for r in rates_before]
+    fig.add_trace(go.Scatter(
+        x=dcs_before, y=rates_after, mode="lines",
+        name="Cupom Depois",
+        line=dict(color=_FRC_COLOR, width=2),
+        hovertemplate="DC: %{x}<br>Cupom: %{y:.3f}%<extra>Depois</extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dcs_before + dcs_before[::-1],
+        y=rates_after + rates_before[::-1],
+        fill="toself", fillcolor="rgba(188,140,255,0.06)",
+        line=dict(width=0), showlegend=False, hoverinfo="skip",
+    ))
+
+    vert_dcs = [v[0] for v in vertices]
+    vert_rates = [v[1] for v in vertices]
+    fig.add_trace(go.Scatter(
+        x=vert_dcs, y=vert_rates, mode="markers",
+        name="Vertices FRC",
+        marker=dict(size=5, color=_FRC_COLOR, symbol="diamond"),
+        hovertemplate="DC: %{x}<br>Cupom: %{y:.3f}%<extra>Vertice</extra>",
+    ))
+
+    if legs:
+        cupom_legs = [l for l in legs if l["instrument"] in ("FRC", "DDI")]
+        for i, l in enumerate(cupom_legs):
+            lbl = f"{_dir_label(l)} {l['instrument']} {l['parsed']['label']}"
+            fig.add_trace(go.Scatter(
+                x=[l["dc"]], y=[l["tax_fin"]], mode="markers+text",
+                name=lbl,
+                marker=dict(size=10, color=_FRC_COLOR, symbol="circle"),
+                text=[lbl], textposition="top center",
+                textfont=dict(size=10, color=_FRC_COLOR),
+                hovertemplate=f"{lbl}<br>DC: %{{x}}<br>Taxa: %{{y:.3f}}%<extra></extra>",
+            ))
+
+    fig.update_layout(
+        **_base_layout("Cupom Cambial Limpo (FRC) — lin360", 400),
+        xaxis=dict(title="Prazo (DC)", gridcolor=_GRID),
+        yaxis=dict(title="Cupom (% a.a. lin360)", tickformat=".2f", gridcolor=_GRID),
+    )
+    return fig
+
+
+def chart_dol_forward(di1_contracts: list, frc_contracts: list,
+                       spot: float, delta_pre_bps: float = 0.0,
+                       delta_cupom_bps: float = 0.0,
+                       delta_fx_pct: float = 0.0,
+                       legs: list[dict] = None) -> go.Figure:
+    """Curva de dolar forward implicito antes/depois dos choques."""
+    from lib.calendar import default_liq_date
+    from datetime import date
+
+    fig = go.Figure()
+    liq = default_liq_date(date.today())
+    di_verts = build_di_vertices(di1_contracts, liq)
+    frc_verts = build_frc_vertices(frc_contracts, liq)
+
+    if not di_verts or not frc_verts or spot <= 0:
+        fig.update_layout(**_base_layout("Dolar Forward — sem dados", 400))
+        return fig
+
+    fwd_curve = build_forward_curve(di_verts, frc_verts, spot, liq)
+    if not fwd_curve:
+        fig.update_layout(**_base_layout("Dolar Forward — sem dados", 400))
+        return fig
+
+    dus = [p[0] for p in fwd_curve]
+    fwds_before = [p[2] for p in fwd_curve]
+
+    fig.add_trace(go.Scatter(
+        x=dus, y=fwds_before, mode="lines",
+        name="Forward Antes",
+        line=dict(color=_MUTED, width=1.5, dash="dash"),
+        hovertemplate="DU: %{x}<br>Fwd: R$ %{y:.4f}<extra>Antes</extra>",
+    ))
+
+    spot_after = spot * (1 + delta_fx_pct / 100)
+    di_verts_after = [(du, r + delta_pre_bps / 100) for du, r in di_verts]
+    frc_verts_after = [(dc, r + delta_cupom_bps / 100) for dc, r in frc_verts]
+    fwd_after_curve = build_forward_curve(di_verts_after, frc_verts_after, spot_after, liq)
+    fwds_after = [p[2] for p in fwd_after_curve] if fwd_after_curve else fwds_before
+
+    fig.add_trace(go.Scatter(
+        x=dus[:len(fwds_after)], y=fwds_after, mode="lines",
+        name="Forward Depois",
+        line=dict(color=_FWD_COLOR, width=2),
+        hovertemplate="DU: %{x}<br>Fwd: R$ %{y:.4f}<extra>Depois</extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dus[:len(fwds_after)] + dus[:len(fwds_after)][::-1],
+        y=fwds_after + fwds_before[:len(fwds_after)][::-1],
+        fill="toself", fillcolor="rgba(63,185,80,0.06)",
+        line=dict(width=0), showlegend=False, hoverinfo="skip",
+    ))
+
+    fig.add_hline(y=spot, line_dash="dot", line_color=_MUTED,
+                  annotation_text=f"Spot {spot:.4f}", annotation_font_color=_MUTED)
+
+    if legs:
+        dol_legs = [l for l in legs if l["instrument"] == "DOL"]
+        for l in dol_legs:
+            lbl = f"{_dir_label(l)} DOL {l['parsed']['label']}"
+            fig.add_trace(go.Scatter(
+                x=[l["du"]], y=[l["taxa"] / 1000], mode="markers+text",
+                name=lbl,
+                marker=dict(size=10, color=_FWD_COLOR, symbol="circle"),
+                text=[lbl], textposition="top center",
+                textfont=dict(size=10, color=_FWD_COLOR),
+                hovertemplate=f"{lbl}<br>DU: %{{x}}<br>Cotacao: %{{y:.4f}}<extra></extra>",
+            ))
+
+    fig.update_layout(
+        **_base_layout("Dolar Forward Implicito (paridade coberta)", 400),
+        xaxis=dict(title="Prazo (DU)", gridcolor=_GRID),
+        yaxis=dict(title="R$/USD", tickformat=".4f", gridcolor=_GRID),
+    )
+    return fig
+
+
+def chart_taxa_real(dap_contracts: list, delta_ipca_bps: float = 0.0,
+                     legs: list[dict] = None) -> go.Figure:
+    """Curva DAP (taxa real IPCA) antes/depois do choque."""
+    from lib.calendar import default_liq_date
+    from datetime import date
+
+    fig = go.Figure()
+    liq = default_liq_date(date.today())
+    vertices = build_dap_vertices(dap_contracts, liq)
+    if not vertices:
+        fig.update_layout(**_base_layout("Taxa Real (DAP) — sem dados", 400))
+        return fig
+
+    smooth = flat_forward_curve(vertices, du_step=5)
+    if not smooth:
+        fig.update_layout(**_base_layout("Taxa Real (DAP) — sem dados", 400))
+        return fig
+
+    dus = [p[0] for p in smooth]
+    rates_before = [p[1] for p in smooth]
+
+    fig.add_trace(go.Scatter(
+        x=dus, y=rates_before, mode="lines",
+        name="DAP Antes",
+        line=dict(color=_MUTED, width=1.5, dash="dash"),
+        hovertemplate="DU: %{x}<br>Taxa real: %{y:.3f}%<extra>Antes</extra>",
+    ))
+
+    rates_after = [r + delta_ipca_bps / 100 for r in rates_before]
+    fig.add_trace(go.Scatter(
+        x=dus, y=rates_after, mode="lines",
+        name="DAP Depois",
+        line=dict(color=_DAP_COLOR, width=2),
+        hovertemplate="DU: %{x}<br>Taxa real: %{y:.3f}%<extra>Depois</extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dus + dus[::-1],
+        y=rates_after + rates_before[::-1],
+        fill="toself", fillcolor="rgba(210,153,34,0.06)",
+        line=dict(width=0), showlegend=False, hoverinfo="skip",
+    ))
+
+    vert_dus = [v[0] for v in vertices]
+    vert_rates = [v[1] for v in vertices]
+    fig.add_trace(go.Scatter(
+        x=vert_dus, y=vert_rates, mode="markers",
+        name="Vertices DAP",
+        marker=dict(size=5, color=_DAP_COLOR, symbol="diamond"),
+        hovertemplate="DU: %{x}<br>Taxa: %{y:.3f}%<extra>Vertice</extra>",
+    ))
+
+    if legs:
+        ipca_legs = [l for l in legs if l["instrument"] in ("NTN-B", "DAP")]
+        for l in ipca_legs:
+            lbl = f"{_dir_label(l)} {l['instrument']} {l['parsed']['label']}"
+            fig.add_trace(go.Scatter(
+                x=[l["du"]], y=[l["tax_fin"]], mode="markers+text",
+                name=lbl,
+                marker=dict(size=10, color=_DAP_COLOR, symbol="circle"),
+                text=[lbl], textposition="top center",
+                textfont=dict(size=10, color=_DAP_COLOR),
+                hovertemplate=f"{lbl}<br>DU: %{{x}}<br>Taxa: %{{y:.3f}}%<extra></extra>",
+            ))
+
+    fig.update_layout(
+        **_base_layout("Taxa Real (DAP) — Cupom IPCA", 400),
+        xaxis=dict(title="Prazo (DU)", gridcolor=_GRID),
+        yaxis=dict(title="Taxa real (% a.a.)", tickformat=".2f", gridcolor=_GRID),
     )
     return fig
 

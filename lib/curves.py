@@ -202,3 +202,91 @@ def build_dap_vertices(dap_contracts: list[dict], liq_date) -> list[tuple[int, f
 
     pairs.sort()
     return pairs
+
+
+def build_frc_vertices(frc_contracts: list[dict], liq_date) -> list[tuple[int, float]]:
+    """Converte contratos FRC da B3 em vertices (dc, taxa_aa).
+
+    FRC usa convencao linear 360 DC.
+    """
+    from .calendar import dc_entre
+    from datetime import date
+
+    pairs = []
+    for c in frc_contracts:
+        rate = c.get("last", 0)
+        if rate <= 0:
+            rate = c.get("ajuste", 0)
+        if rate <= 0:
+            continue
+        vp = c["vcto"].split("-")
+        vd = date(int(vp[0]), int(vp[1]), int(vp[2]))
+        dc = dc_entre(liq_date, vd)
+        if dc > 0:
+            pairs.append((dc, rate))
+
+    pairs.sort()
+    return pairs
+
+
+def flat_forward_curve_lin360(vertices: list[tuple[int, float]],
+                              dc_step: int = 5) -> list[tuple[int, float]]:
+    """Gera curva suave de cupom cambial via flat forward lin360."""
+    if not vertices:
+        return []
+    verts = sorted(vertices, key=lambda x: x[0])
+    dc_min = verts[0][0]
+    dc_max = verts[-1][0]
+    result = []
+    dc = dc_min
+    while dc <= dc_max:
+        r = flat_forward_lin360(verts, dc)
+        if r is not None:
+            result.append((dc, r))
+        dc += dc_step
+    if result and result[-1][0] != dc_max:
+        result.append((dc_max, verts[-1][1]))
+    return result
+
+
+def build_forward_curve(di_vertices: list[tuple[int, float]],
+                        frc_vertices: list[tuple[int, float]],
+                        spot: float,
+                        liq_date,
+                        dc_step: int = 10) -> list[tuple[int, float, float]]:
+    """Calcula curva de dolar forward implicito pela paridade coberta.
+
+    Para cada vertice da curva DI, calcula:
+        Fwd(t) = Spot * (1+pre)^(DU/252) / (1+cupom*DC/360)
+
+    Interpola cupom cambial via flat_forward_lin360 para cada DC.
+
+    Args:
+        di_vertices: (du, taxa_pre) da curva DI
+        frc_vertices: (dc, taxa_cupom) da curva FRC
+        spot: dolar spot R$/USD
+        liq_date: data de liquidacao
+        dc_step: passo em DC
+
+    Returns:
+        Lista de (du, dc, fwd) ordenada por du.
+    """
+    from .calendar import dc_entre, du_entre
+    from datetime import date, timedelta
+
+    if not di_vertices or not frc_vertices or spot <= 0:
+        return []
+
+    result = []
+    for du, pre in di_vertices:
+        approx_dc = round(du * 365 / 252)
+        cupom = flat_forward_lin360(frc_vertices, approx_dc)
+        if cupom is None:
+            continue
+        fator_pre = (1 + pre / 100) ** (du / 252)
+        fator_cupom = 1 + (cupom / 100) * approx_dc / 360
+        if fator_cupom > 0:
+            fwd = spot * fator_pre / fator_cupom
+            result.append((du, approx_dc, fwd))
+
+    return result
