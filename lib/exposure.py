@@ -92,11 +92,12 @@ def detect_strategy(legs: list[dict], spot: float = 4.9724) -> dict:
 
         for dol in dols:
             for d in dis:
-                if dol["parsed"]["label"] == d["parsed"]["label"] and dol["direction"] == d["direction"]:
+                if dol["direction"] == d["direction"]:
                     cupom = cupom_cambial_implicito(spot, dol["taxa"], d["taxa"], d["du"], dol["dc"])
                     direc = "Comprado" if dol["direction"] == "C" else "Vendido"
+                    vcto_note = "" if dol["parsed"]["label"] == d["parsed"]["label"] else f" (DOL {dol['parsed']['label']}, DI {d['parsed']['label']})"
                     return {"type": "cupom_sint", "cupom": cupom, "dol": dol, "di": d,
-                            "result": f"{direc} Cupom Cambial Sintetico: {cupom:.2f}% a.a."}
+                            "result": f"{direc} Cupom Cambial Sintetico: {cupom:.2f}% a.a.{vcto_note}"}
 
         frcs = [l for l in legs_pool if l["instrument"] == "FRC"]
         ddis = [l for l in legs_pool if l["instrument"] == "DDI"]
